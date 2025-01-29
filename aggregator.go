@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -22,9 +22,6 @@ type WordsFinder struct {
 	mu sync.Mutex
 	wg sync.WaitGroup
 
-	dataFileName   string
-	filterFileName string
-
 	wordsToFind []string
 	allWords    []Words
 	result      Words
@@ -33,33 +30,42 @@ type WordsFinder struct {
 func (wf *WordsFinder) push(names *Words) {
 	wf.mu.Lock()
 	defer wf.mu.Unlock()
+	// Safely push data into the array with mutex lock
 	wf.allWords = append(wf.allWords, *names)
 }
 
-func (wf *WordsFinder) match(text string, lineOffset int, charsOffset int) {
+func (wf *WordsFinder) match(text string, linesOffset int, charsOffset int) {
 	defer wf.wg.Done()
 
 	names := Words{}
 
+	// Start iterating with each word
 	for _, name := range wf.wordsToFind {
 		start := 0
 		for {
+			// Find the position of the word to begin
 			position := strings.Index(strings.ToLower(text[start:]), strings.ToLower(name))
 			if position == -1 {
 				break
 			}
-			absolutePosition := start + position
-			pos := Position{lineOffset, charsOffset + absolutePosition}
+			// The count of chars before the found word
+			localPosition := start + position
+			// Create position
+			pos := Position{linesOffset, charsOffset + localPosition}
+			// Save the position
 			names[name] = append(names[name], pos)
 
-			start = absolutePosition + len(name)
+			// Start from the new point
+			start = localPosition + len(name)
 		}
 	}
+	// Save the result to global array
 	wf.push(&names)
 }
 
 func (wf *WordsFinder) aggregate() {
 	aggregated := &Words{}
+	// Collect result from every separate struct into the one
 	for _, names := range wf.allWords {
 		for name, positions := range names {
 			for _, position := range positions {
@@ -70,15 +76,16 @@ func (wf *WordsFinder) aggregate() {
 	wf.result = *aggregated
 }
 
-func (wf *WordsFinder) uploadFilters() {
-	file, err := os.Open(wf.filterFileName)
+func (wf *WordsFinder) uploadFilters(filterFileName string) {
+	// Upload data filters to the memory
+	file, err := os.Open(filterFileName)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
 		return
 	}
 	defer file.Close()
 
-	fileContent, err := ioutil.ReadAll(file)
+	fileContent, err := io.ReadAll(file)
 	if err != nil {
 		fmt.Println("Error reading file:", err)
 		return
@@ -87,12 +94,13 @@ func (wf *WordsFinder) uploadFilters() {
 	// Unmarshal the JSON data into the slice
 	err = json.Unmarshal(fileContent, &wf.wordsToFind)
 	if err != nil {
-		fmt.Println("Error unmarshaling JSON:", err)
+		fmt.Println("Error unmarshalling JSON:", err)
 		return
 	}
 }
 
 func (wf *WordsFinder) saveAsJson() {
+	// Save the result to the json file
 	file, err := os.Create("./data/result.json")
 	if err != nil {
 		fmt.Println("Error creating file:", err)
@@ -114,17 +122,14 @@ func (wf *WordsFinder) saveAsJson() {
 }
 
 func (wf *WordsFinder) process(fileName string, filterFileName string) {
-	wf.dataFileName = fileName
-	wf.filterFileName = filterFileName
-
 	// Upload words for lookup
-	wf.uploadFilters()
+	wf.uploadFilters(filterFileName)
 
 	// Start tracking the main task
 	start := time.Now()
 
 	// Open file with the data
-	readFile, err := os.Open(wf.dataFileName)
+	readFile, err := os.Open(fileName)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -134,10 +139,10 @@ func (wf *WordsFinder) process(fileName string, filterFileName string) {
 	fileScanner := bufio.NewScanner(readFile)
 	fileScanner.Split(bufio.ScanLines)
 
-	var linesCount = 0
+	var linesCount = 1
 	var charsCount = 0
-
 	var text = ""
+
 	for fileScanner.Scan() {
 		text = fileScanner.Text()
 		wf.wg.Add(1)
@@ -145,8 +150,7 @@ func (wf *WordsFinder) process(fileName string, filterFileName string) {
 		go wf.match(text, linesCount, charsCount)
 
 		linesCount++
-		// +1 char because of newline char "\n"
-		charsCount += len(text) + 1
+		charsCount += len(text)
 		text = ""
 	}
 
